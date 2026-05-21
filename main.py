@@ -138,7 +138,7 @@ def fetch_yahoo_single(code: str) -> dict | None:
             if not close:
                 continue
             return {
-                "name": STOCK_NAMES.get(code, meta.get("shortName", code)),
+                "name": meta.get("shortName", code),
                 "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
                 "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
                 "high": str(quote.get("high", [0])[-1] if quote.get("high") else 0),
