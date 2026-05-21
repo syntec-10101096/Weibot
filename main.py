@@ -23,10 +23,16 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 def fetch_twse_closing(date_str: str) -> dict:
     """從 TWSE 取得當日收盤行情"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        print(f"TWSE 回應狀態: {resp.status_code}")
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"TWSE stat: {data.get('stat')}, has data9: {'data9' in data}")
+    except Exception as e:
+        print(f"TWSE 請求失敗: {e}")
+        return {}
 
     stock_data = {}
     if data.get("stat") == "OK" and "data9" in data:
@@ -43,6 +49,50 @@ def fetch_twse_closing(date_str: str) -> dict:
                     "change": row[9].replace(",", ""),
                     "change_pct": row[10].replace(",", "") if len(row) > 10 else "N/A",
                 }
+
+    # 若 TWSE 無資料，改用備用 API
+    if not stock_data:
+        print("TWSE 無資料，嘗試備用來源 (Yahoo Finance)...")
+        stock_data = fetch_yahoo_backup()
+
+    return stock_data
+
+
+def fetch_yahoo_backup() -> dict:
+    """備用：透過 Yahoo Finance 取得收盤資料"""
+    stock_data = {}
+    tw_stocks = {code: f"{code}.TW" for code in STOCK_LIST}
+
+    for code, ticker in tw_stocks.items():
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            result = data.get("chart", {}).get("result", [])
+            if not result:
+                continue
+            meta = result[0].get("meta", {})
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            prev_close = meta.get("chartPreviousClose", 0)
+            close = meta.get("regularMarketPrice", 0)
+            stock_data[code] = {
+                "name": meta.get("shortName", code),
+                "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
+                "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
+                "high": str(quote.get("high", [0])[-1] if quote.get("high") else 0),
+                "low": str(quote.get("low", [0])[-1] if quote.get("low") else 0),
+                "close": str(close),
+                "change": f"{close - prev_close:.2f}" if prev_close else "N/A",
+                "change_pct": f"{((close - prev_close) / prev_close * 100):.2f}%" if prev_close else "N/A",
+            }
+        except Exception as e:
+            print(f"Yahoo {code} 失敗: {e}")
+            continue
+
+    print(f"Yahoo 取得 {len(stock_data)} 檔股票資料")
     return stock_data
 
 
