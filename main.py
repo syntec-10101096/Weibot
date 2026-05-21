@@ -53,14 +53,11 @@ def fetch_holdings_from_notion() -> tuple:
         code = code_arr[0]["plain_text"].strip() if code_arr else ""
         if not code:
             continue
-        # 名稱 (rich_text)
-        name_arr = props.get("名稱", {}).get("rich_text", [])
-        name = name_arr[0]["plain_text"].strip() if name_arr else code
         # 持有成本 (number)
         cost = props.get("持有成本", {}).get("number") or 0
 
         stock_list.append(code)
-        stock_names[code] = name
+        stock_names[code] = code  # 預設用代號，後續由市場資料覆蓋
         stock_costs[code] = cost
 
     print(f"從 Notion 讀取 {len(stock_list)} 檔持股: {', '.join(stock_list)}")
