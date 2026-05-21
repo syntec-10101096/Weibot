@@ -1,0 +1,34 @@
+name: Daily Stock Report (Taiwan 15:00)
+
+on:
+  schedule:
+    # UTC 07:00 = 台灣時間 15:00 (UTC+8)
+    # 僅工作日執行 (週一至週五)
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:  # 允許手動觸發測試
+
+jobs:
+  stock-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r stock_report/requirements.txt
+
+      - name: Run stock report
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          TZ: Asia/Taipei
+        run: python stock_report/main.py
