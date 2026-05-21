@@ -100,20 +100,27 @@ def fetch_twse_closing(date_str: str) -> dict:
                     "change_pct": row[10].replace(",", "") if len(row) > 10 else "N/A",
                 }
 
-    # 若 TWSE 無資料，改用備用 API
+    # 若 TWSE 完全無資料，全部改用 Yahoo
     if not stock_data:
         print("TWSE 無資料，嘗試備用來源 (Yahoo Finance)...")
         stock_data = fetch_yahoo_backup()
+    else:
+        # TWSE 只有上市股，上櫃股需從 Yahoo 補齊
+        missing = [code for code in STOCK_LIST if code not in stock_data]
+        if missing:
+            print(f"TWSE 缺少 {len(missing)} 檔（可能為上櫃股）: {', '.join(missing)}，從 Yahoo 補齊...")
+            for code in missing:
+                yahoo_data = fetch_yahoo_single(code)
+                if yahoo_data:
+                    stock_data[code] = yahoo_data
 
     return stock_data
 
 
-def fetch_yahoo_backup() -> dict:
-    """備用：透過 Yahoo Finance 取得收盤資料"""
-    stock_data = {}
-    tw_stocks = {code: f"{code}.TW" for code in STOCK_LIST}
-
-    for code, ticker in tw_stocks.items():
+def fetch_yahoo_single(code: str) -> dict | None:
+    """從 Yahoo Finance 取得單一股票收盤資料（先嘗試 .TW 再試 .TWO）"""
+    for suffix in [".TW", ".TWO"]:
+        ticker = f"{code}{suffix}"
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
             headers = {"User-Agent": "Mozilla/5.0"}
@@ -128,7 +135,9 @@ def fetch_yahoo_backup() -> dict:
             quote = result[0].get("indicators", {}).get("quote", [{}])[0]
             prev_close = meta.get("chartPreviousClose", 0)
             close = meta.get("regularMarketPrice", 0)
-            stock_data[code] = {
+            if not close:
+                continue
+            return {
                 "name": STOCK_NAMES.get(code, meta.get("shortName", code)),
                 "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
                 "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
@@ -139,9 +148,18 @@ def fetch_yahoo_backup() -> dict:
                 "change_pct": f"{((close - prev_close) / prev_close * 100):.2f}%" if prev_close else "N/A",
             }
         except Exception as e:
-            print(f"Yahoo {code} 失敗: {e}")
+            print(f"Yahoo {ticker} 失敗: {e}")
             continue
+    return None
 
+
+def fetch_yahoo_backup() -> dict:
+    """備用：透過 Yahoo Finance 取得所有持股收盤資料"""
+    stock_data = {}
+    for code in STOCK_LIST:
+        result = fetch_yahoo_single(code)
+        if result:
+            stock_data[code] = result
     print(f"Yahoo 取得 {len(stock_data)} 檔股票資料")
     return stock_data
 
@@ -249,7 +267,7 @@ def call_llm_analysis(prompt: str) -> str:
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
                     system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
-                    max_output_tokens=8000,
+                    max_output_tokens=16000,
                     temperature=0.3,
                 ),
             )
