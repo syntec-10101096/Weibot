@@ -181,8 +181,12 @@ def main():
         print("今日非交易日，跳過。")
         return
 
-    # 1. 取得收盤數據
-    date_str = datetime.date.today().strftime("%Y%m%d")
+    # 1. 取得收盤數據（測試用：取前一個交易日）
+    target_date = datetime.date.today() - datetime.timedelta(days=1)
+    # 若昨天是週日則取週五
+    while target_date.weekday() >= 5:
+        target_date -= datetime.timedelta(days=1)
+    date_str = target_date.strftime("%Y%m%d")
     print(f"正在取得 {date_str} 收盤數據...")
     stock_data = fetch_twse_closing(date_str)
 
