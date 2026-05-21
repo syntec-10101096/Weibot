@@ -3,7 +3,7 @@
 排程：每個交易日下午 3:00 (UTC+8) 自動執行
 分析報告：發佈至 Notion
 推播通知：LINE Messaging API（摘要 + Notion 連結）
-LLM：Google Gemini 2.5 Flash
+LLM：Anthropic Claude Sonnet 4
 """
 
 import os
@@ -11,14 +11,14 @@ import json
 import time
 import datetime
 import requests
-from google import genai
+import anthropic
 
 # ====== 設定 ======
-GEMINI_MODEL = "gemini-2.5-flash"
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 NOTION_PARENT_PAGE_ID = "32e4a231-c75f-8064-b4bf-e6fd300da9d3"
 NOTION_HOLDINGS_DB_ID = "3674a231-c75f-8136-b401-dc5f45f015e9"
@@ -356,25 +356,22 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 
 
 def call_llm_analysis(prompt: str) -> str:
-    """呼叫 Gemini 進行深度分析（含重試機制）"""
-    import time
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    """呼叫 Claude 進行深度分析（含重試機制）"""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
-                    max_output_tokens=16000,
-                    temperature=0.3,
-                ),
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=16000,
+                temperature=0.3,
+                system="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response.text
+            return response.content[0].text
         except Exception as e:
-            print(f"Gemini 呼叫失敗 (第 {attempt + 1} 次): {e}")
+            print(f"Claude 呼叫失敗 (第 {attempt + 1} 次): {e}")
             if attempt < max_retries - 1:
                 wait = 30 * (attempt + 1)
                 print(f"等待 {wait} 秒後重試...")
