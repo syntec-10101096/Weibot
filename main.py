@@ -507,7 +507,6 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
 
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
-        "icon": {"type": "emoji", "emoji": "📊"},
         "properties": {
             "title": {
                 "title": [{"text": {"content": title}}]
