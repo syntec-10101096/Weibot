@@ -117,51 +117,92 @@ def fetch_twse_closing(date_str: str) -> dict:
     return stock_data
 
 
-def fetch_yahoo_single(code: str) -> dict | None:
-    """從 Yahoo Finance 取得單一股票收盤資料（先嘗試 .TW 再試 .TWO）"""
-    for suffix in [".TW", ".TWO"]:
-        ticker = f"{code}{suffix}"
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                continue
+def fetch_yahoo_tw_batch(codes: list) -> dict:
+    """從 Yahoo 台灣取得多檔股票收盤資料（中文名稱），回傳 {code: info}"""
+    stock_data = {}
+    # 組合 symbols：先嘗試 .TW，失敗的再用 .TWO
+    symbols_tw = [f"{code}.TW" for code in codes]
+    symbols_str = ";".join(symbols_tw)
+
+    url = (
+        "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;"
+        f"fields=symbolId,name,previousClose,openPrice,dayHigh,dayLow,closePrice,change,changePercent,totalVolume;"
+        f"symbols={symbols_str}"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://tw.stock.yahoo.com/",
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
             data = resp.json()
-            result = data.get("chart", {}).get("result", [])
-            if not result:
-                continue
-            meta = result[0].get("meta", {})
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            prev_close = meta.get("chartPreviousClose", 0)
-            close = meta.get("regularMarketPrice", 0)
-            if not close:
-                continue
-            return {
-                "name": meta.get("shortName", code),
-                "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
-                "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
-                "high": str(quote.get("high", [0])[-1] if quote.get("high") else 0),
-                "low": str(quote.get("low", [0])[-1] if quote.get("low") else 0),
-                "close": str(close),
-                "change": f"{close - prev_close:.2f}" if prev_close else "N/A",
-                "change_pct": f"{((close - prev_close) / prev_close * 100):.2f}%" if prev_close else "N/A",
-            }
+            for item in data:
+                symbol_id = item.get("symbolId", "")
+                code = symbol_id.replace(".TW", "").replace(".TWO", "")
+                close = item.get("closePrice")
+                if not close and not item.get("name"):
+                    continue
+                stock_data[code] = {
+                    "name": item.get("name", code),
+                    "volume": str(int(item.get("totalVolume", 0))),
+                    "open": str(item.get("openPrice", 0)),
+                    "high": str(item.get("dayHigh", 0)),
+                    "low": str(item.get("dayLow", 0)),
+                    "close": str(close if close else 0),
+                    "change": f"{item.get('change', 0):.2f}",
+                    "change_pct": f"{item.get('changePercent', 0):.2f}%",
+                }
+    except Exception as e:
+        print(f"Yahoo TW batch (.TW) 失敗: {e}")
+
+    # 找出 .TW 沒取到的，改用 .TWO（上櫃）
+    missing = [code for code in codes if code not in stock_data]
+    if missing:
+        symbols_two = [f"{code}.TWO" for code in missing]
+        symbols_str2 = ";".join(symbols_two)
+        url2 = (
+            "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;"
+            f"fields=symbolId,name,previousClose,openPrice,dayHigh,dayLow,closePrice,change,changePercent,totalVolume;"
+            f"symbols={symbols_str2}"
+        )
+        try:
+            resp2 = requests.get(url2, headers=headers, timeout=15)
+            if resp2.status_code == 200:
+                data2 = resp2.json()
+                for item in data2:
+                    symbol_id = item.get("symbolId", "")
+                    code = symbol_id.replace(".TWO", "").replace(".TW", "")
+                    close = item.get("closePrice")
+                    if not close and not item.get("name"):
+                        continue
+                    stock_data[code] = {
+                        "name": item.get("name", code),
+                        "volume": str(int(item.get("totalVolume", 0))),
+                        "open": str(item.get("openPrice", 0)),
+                        "high": str(item.get("dayHigh", 0)),
+                        "low": str(item.get("dayLow", 0)),
+                        "close": str(close if close else 0),
+                        "change": f"{item.get('change', 0):.2f}",
+                        "change_pct": f"{item.get('changePercent', 0):.2f}%",
+                    }
         except Exception as e:
-            print(f"Yahoo {ticker} 失敗: {e}")
-            continue
-    return None
+            print(f"Yahoo TW batch (.TWO) 失敗: {e}")
+
+    print(f"Yahoo TW 取得 {len(stock_data)} 檔股票資料")
+    return stock_data
+
+
+def fetch_yahoo_single(code: str) -> dict | None:
+    """從 Yahoo 台灣取得單一股票收盤資料（中文名稱）"""
+    result = fetch_yahoo_tw_batch([code])
+    return result.get(code)
 
 
 def fetch_yahoo_backup() -> dict:
-    """備用：透過 Yahoo Finance 取得所有持股收盤資料"""
-    stock_data = {}
-    for code in STOCK_LIST:
-        result = fetch_yahoo_single(code)
-        if result:
-            stock_data[code] = result
-    print(f"Yahoo 取得 {len(stock_data)} 檔股票資料")
-    return stock_data
+    """備用：透過 Yahoo 台灣取得所有持股收盤資料"""
+    return fetch_yahoo_tw_batch(STOCK_LIST)
 
 
 def fetch_institutional_trading() -> dict:
