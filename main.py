@@ -482,7 +482,7 @@ def build_line_summary(stock_data: dict, notion_url: str) -> str:
         # 漲跌符號
         try:
             change_val = float(change)
-            arrow = "🔺" if change_val > 0 else "�" if change_val < 0 else "➖"
+            arrow = "⬆️" if change_val > 0 else "⬇️" if change_val < 0 else "➖"
             change_str = f"+{change}" if change_val > 0 else str(change)
         except (ValueError, TypeError):
             arrow = "➖"
