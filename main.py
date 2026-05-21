@@ -369,48 +369,61 @@ def _callout(text: str, emoji: str = "💡") -> dict:
 
 
 def _parse_analysis_to_blocks(content: str) -> list:
-    """智慧解析 LLM 分析內容為 Notion blocks，合併連續段落以減少 block 數量"""
+    """智慧解析 LLM 分析內容為 Notion blocks，平衡可讀性與 block 數量"""
+    import re
     blocks = []
     lines = content.split("\n")
     pending_lines = []  # 累積一般段落文字
 
     def flush_pending():
-        """將累積的一般段落合併為一個 paragraph block"""
+        """將累積的一般段落合併為 paragraph blocks（每段 ≤ 2000 字）"""
         if pending_lines:
             text = "\n".join(pending_lines)
-            # Notion rich_text 限 2000 字，超過則分段
             while text:
                 chunk = text[:2000]
                 blocks.append(_paragraph(chunk))
                 text = text[2000:]
             pending_lines.clear()
 
+    # 辨識段落標題模式
+    section_pattern = re.compile(r'^[一二三四五六七八九十]+[、．.]')
+    stock_code_pattern = re.compile(r'^\d{4}\s')
+
     for line in lines:
         line = line.strip()
         if not line:
-            # 空行 → flush 並加分隔（保留段落結構）
             flush_pending()
             continue
 
-        # 以 ▶ 開頭 → heading_3（個股標題）
+        # ▶ 開頭 → heading_3（個股標題）
         if line.startswith("▶"):
             flush_pending()
             blocks.append(_heading3(line.lstrip("▶").strip()))
-        # 以 ◆ 開頭 → callout（重要段落）
+        # ◆ 開頭 → callout
         elif line.startswith("◆"):
             flush_pending()
             blocks.append(_callout(line.lstrip("◆").strip(), "◆"))
-        # 含【評分】→ callout 強調
+        # 中文數字段落標題（一、即時數據... 二、籌碼面...）
+        elif section_pattern.match(line):
+            flush_pending()
+            blocks.append(_heading3(line))
+        # 純股票代號 + 名稱（短行，作為個股分隔標題）
+        elif stock_code_pattern.match(line) and len(line) < 30:
+            flush_pending()
+            blocks.append(_heading3(line))
+        # 含「評分」或「吸引力」→ 星星 callout
         elif "評分" in line or "吸引力" in line:
             flush_pending()
             blocks.append(_callout(line, "⭐"))
-        # 含「組合建議」→ callout
-        elif "組合建議" in line or "整體" in line:
+        # 含「組合建議」或「整體」→ 摘要 callout
+        elif "組合建議" in line or "整體建議" in line:
             flush_pending()
             blocks.append(_callout(line, "📋"))
-        # 一般段落：累積合併
+        # 一般段落：累積（但超過 1500 字就先 flush）
         else:
             pending_lines.append(line)
+            if sum(len(l) for l in pending_lines) > 1500:
+                flush_pending()
 
     flush_pending()
     return blocks
