@@ -15,7 +15,7 @@ import requests
 # ====== 設定 ======
 GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
 GITHUB_MODELS_MODEL = "anthropic/claude-sonnet-4"
-GITHUB_MODELS_TOKEN = os.environ.get("GITHUB_MODELS_TOKEN", "")
+GITHUB_MODELS_TOKEN = os.environ.get("GH_MODELS_TOKEN", "")
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
