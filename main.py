@@ -19,6 +19,11 @@ STOCK_NAMES = {
     "6488": "環球晶", "2330": "台積電", "6196": "帆宣",
     "2344": "華邦電", "7750": "鑫宇辰", "2313": "華通",
 }
+STOCK_COSTS = {
+    "2454": 2190.78, "2492": 143.87, "2451": 235.33,
+    "6488": 540.77, "2330": 2110.20, "6196": 393.96,
+    "2344": 123.68, "7750": 0, "2313": 255.36,
+}
 GEMINI_MODEL = "gemini-2.5-flash"
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -135,9 +140,17 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
     data_section = f"## 今日收盤數據 ({today})\n\n"
     for code, info in stock_data.items():
         inst_info = institutional.get(code, {})
+        cost = STOCK_COSTS.get(code, 0)
+        try:
+            close_val = float(info['close'])
+            pnl_pct = ((close_val - cost) / cost * 100) if cost > 0 else 0
+            pnl_str = f"{pnl_pct:+.2f}%"
+        except (ValueError, TypeError):
+            pnl_str = "N/A"
         data_section += f"### {code} {info['name']}\n"
         data_section += f"- 收盤價: {info['close']} | 漲跌: {info['change']} | 成交量: {info['volume']}\n"
         data_section += f"- 開: {info['open']} / 高: {info['high']} / 低: {info['low']}\n"
+        data_section += f"- 持有成本: {cost:.2f} | 目前損益: {pnl_str}\n"
         if inst_info:
             data_section += f"- 外資買賣超: {inst_info.get('foreign_buy_sell', 'N/A')} 張\n"
             data_section += f"- 投信買賣超: {inst_info.get('investment_trust_buy_sell', 'N/A')} 張\n"
@@ -162,7 +175,10 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 - 最近一季營收達成率，相較去年同期成長性（YoY）
 - 在目前產業鏈中的角色定位
 
-四、操作建議與情境規劃：
+四、持有成本與操作建議：
+- 根據我的持有成本，分析目前是獲利或套牢狀態
+- 若獲利中：是否到達合理停利點？建議部分獲利了結或繼續持有？
+- 若套牢中：建議攤平策略（加碼價位）或停損出場？
 - 關鍵支撐價位與建議分批進場時機
 - 技術性停損點與合理獲利目標價
 - Beta 係數表現與風險預警
@@ -212,7 +228,7 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
     # === 收盤數據總覽 ===
     blocks.append(_heading2("📈 收盤數據總覽"))
 
-    # 表格：股票代號 | 名稱 | 收盤價 | 漲跌 | 漲跌幅 | 成交量
+    # 表格：代號 | 名稱 | 收盤價 | 漲跌 | 漲跌% | 成本 | 損益% | 成交量
     table_rows = []
     # Header row
     table_rows.append({
@@ -223,18 +239,43 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
             [{"type": "text", "text": {"content": "收盤價"}}],
             [{"type": "text", "text": {"content": "漲跌"}}],
             [{"type": "text", "text": {"content": "漲跌%"}}],
+            [{"type": "text", "text": {"content": "持有成本"}}],
+            [{"type": "text", "text": {"content": "損益%"}}],
             [{"type": "text", "text": {"content": "成交量"}}],
         ]}
     })
     for code, info in stock_data.items():
+        # 漲跌顏色：紅漲綠跌
+        change_str = info.get("change", "")
+        change_pct_str = info.get("change_pct", "")
+        try:
+            change_val = float(change_str)
+            change_color = "red" if change_val > 0 else "green" if change_val < 0 else "default"
+        except (ValueError, TypeError):
+            change_color = "default"
+
+        # 持有成本與損益
+        cost = STOCK_COSTS.get(code, 0)
+        cost_str = f"{cost:.2f}" if cost > 0 else "N/A"
+        try:
+            close_val = float(info.get("close", "0"))
+            pnl_pct = ((close_val - cost) / cost * 100) if cost > 0 else 0
+            pnl_str = f"{pnl_pct:+.2f}%"
+            pnl_color = "red" if pnl_pct > 0 else "green" if pnl_pct < 0 else "default"
+        except (ValueError, TypeError):
+            pnl_str = "N/A"
+            pnl_color = "default"
+
         table_rows.append({
             "type": "table_row",
             "table_row": {"cells": [
                 [{"type": "text", "text": {"content": code}}],
                 [{"type": "text", "text": {"content": info.get("name", "")}}],
                 [{"type": "text", "text": {"content": info.get("close", "")}}],
-                [{"type": "text", "text": {"content": info.get("change", "")}}],
-                [{"type": "text", "text": {"content": info.get("change_pct", "")}}],
+                [{"type": "text", "text": {"content": change_str}, "annotations": {"color": change_color}}],
+                [{"type": "text", "text": {"content": change_pct_str}, "annotations": {"color": change_color}}],
+                [{"type": "text", "text": {"content": cost_str}}],
+                [{"type": "text", "text": {"content": pnl_str}, "annotations": {"color": pnl_color}}],
                 [{"type": "text", "text": {"content": info.get("volume", "")}}],
             ]}
         })
@@ -242,7 +283,7 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
     blocks.append({
         "type": "table",
         "table": {
-            "table_width": 6,
+            "table_width": 8,
             "has_column_header": True,
             "has_row_header": False,
             "children": table_rows,
@@ -447,8 +488,18 @@ def build_line_summary(stock_data: dict, notion_url: str) -> str:
             arrow = "➖"
             change_str = change
 
+        # 持有損益
+        cost = STOCK_COSTS.get(code, 0)
+        try:
+            close_val = float(close)
+            pnl_pct = ((close_val - cost) / cost * 100) if cost > 0 else 0
+            pnl_icon = "📈" if pnl_pct > 0 else "📉" if pnl_pct < 0 else ""
+            pnl_str = f" {pnl_icon}{pnl_pct:+.1f}%" if cost > 0 else ""
+        except (ValueError, TypeError):
+            pnl_str = ""
+
         pct = info.get("change_pct", "")
-        lines.append(f"{arrow} {code} {name} │ {close} ({change_str}) {pct}")
+        lines.append(f"{arrow} {code} {name} │ {close} ({change_str}) {pct}{pnl_str}")
 
     lines.append("")
     lines.append("📋 完整分析報告：")
