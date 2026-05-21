@@ -8,6 +8,7 @@ LLM：Google Gemini 2.5 Flash
 
 import os
 import json
+import time
 import datetime
 import requests
 from google import genai
@@ -71,18 +72,27 @@ STOCK_COSTS = {}
 
 
 def fetch_twse_closing(date_str: str) -> dict:
-    """從 TWSE 取得當日收盤行情"""
+    """從 TWSE 取得當日收盤行情（含重試）"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        print(f"TWSE 回應狀態: {resp.status_code}")
-        resp.raise_for_status()
-        data = resp.json()
-        print(f"TWSE stat: {data.get('stat')}, has data9: {'data9' in data}")
-    except Exception as e:
-        print(f"TWSE 請求失敗: {e}")
-        return {}
+    data = {}
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            print(f"TWSE 回應狀態: {resp.status_code} (第{attempt+1}次)")
+            resp.raise_for_status()
+            data = resp.json()
+            print(f"TWSE stat: {data.get('stat')}, has data9: {'data9' in data}")
+            if data.get("stat") == "OK" and "data9" in data:
+                break
+            # 資料尚未就緒，等待後重試
+            if attempt < 2:
+                print(f"TWSE 資料未就緒，{30*(attempt+1)}秒後重試...")
+                time.sleep(30 * (attempt + 1))
+        except Exception as e:
+            print(f"TWSE 請求失敗: {e}")
+            if attempt < 2:
+                time.sleep(30 * (attempt + 1))
 
     stock_data = {}
     if data.get("stat") == "OK" and "data9" in data:
@@ -102,7 +112,7 @@ def fetch_twse_closing(date_str: str) -> dict:
 
     # 若 TWSE 完全無資料，全部改用 Yahoo
     if not stock_data:
-        print("TWSE 無資料，嘗試備用來源 (Yahoo Finance)...")
+        print(f"TWSE 無資料（stat={data.get('stat', 'N/A')}），嘗試備用來源...")
         stock_data = fetch_yahoo_backup()
     else:
         # TWSE 只有上市股，上櫃股需從 Yahoo 補齊
@@ -136,8 +146,11 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
 
     try:
         resp = requests.get(url, headers=headers, timeout=15)
+        print(f"Yahoo TW .TW 回應: status={resp.status_code}, length={len(resp.text)}")
         if resp.status_code == 200:
             data = resp.json()
+            if not data:
+                print("Yahoo TW .TW 回應為空陣列")
             for item in data:
                 symbol_id = item.get("symbolId", "")
                 code = symbol_id.replace(".TW", "").replace(".TWO", "")
@@ -195,14 +208,61 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
 
 
 def fetch_yahoo_single(code: str) -> dict | None:
-    """從 Yahoo 台灣取得單一股票收盤資料（中文名稱）"""
+    """從 Yahoo 台灣取得單一股票收盤資料，失敗則用國際版"""
     result = fetch_yahoo_tw_batch([code])
+    if not result.get(code):
+        intl = fetch_yahoo_intl_batch([code])
+        return intl.get(code)
     return result.get(code)
 
 
+def fetch_yahoo_intl_batch(codes: list) -> dict:
+    """最終備援：透過 Yahoo Finance 國際版取得收盤資料（可能為英文名）"""
+    stock_data = {}
+    for code in codes:
+        for suffix in [".TW", ".TWO"]:
+            ticker = f"{code}{suffix}"
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+                headers = {"User-Agent": "Mozilla/5.0"}
+                resp = requests.get(url, headers=headers, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                result = data.get("chart", {}).get("result", [])
+                if not result:
+                    continue
+                meta = result[0].get("meta", {})
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                prev_close = meta.get("chartPreviousClose", 0)
+                close = meta.get("regularMarketPrice", 0)
+                if not close:
+                    continue
+                stock_data[code] = {
+                    "name": meta.get("shortName", code),
+                    "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
+                    "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
+                    "high": str(quote.get("high", [0])[-1] if quote.get("high") else 0),
+                    "low": str(quote.get("low", [0])[-1] if quote.get("low") else 0),
+                    "close": str(close),
+                    "change": f"{close - prev_close:.2f}" if prev_close else "N/A",
+                    "change_pct": f"{((close - prev_close) / prev_close * 100):.2f}%" if prev_close else "N/A",
+                }
+                break  # 取到就不用試 .TWO
+            except Exception as e:
+                print(f"Yahoo Intl {ticker} 失敗: {e}")
+                continue
+    print(f"Yahoo Intl 取得 {len(stock_data)} 檔股票資料")
+    return stock_data
+
+
 def fetch_yahoo_backup() -> dict:
-    """備用：透過 Yahoo 台灣取得所有持股收盤資料"""
-    return fetch_yahoo_tw_batch(STOCK_LIST)
+    """備用：先試 Yahoo 台灣（中文），失敗再試國際版"""
+    data = fetch_yahoo_tw_batch(STOCK_LIST)
+    if not data:
+        print("Yahoo TW 無資料，嘗試國際版...")
+        data = fetch_yahoo_intl_batch(STOCK_LIST)
+    return data
 
 
 def fetch_institutional_trading() -> dict:
