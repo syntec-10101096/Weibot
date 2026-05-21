@@ -193,8 +193,8 @@ def call_llm_analysis(prompt: str) -> str:
     return response.text
 
 
-def publish_to_notion(title: str, content: str) -> str:
-    """發佈報告至 Notion，回傳頁面 URL"""
+def publish_to_notion(title: str, content: str, stock_data: dict, institutional: dict) -> str:
+    """發佈報告至 Notion，使用豐富格式，回傳頁面 URL"""
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -202,29 +202,96 @@ def publish_to_notion(title: str, content: str) -> str:
         "Notion-Version": "2022-06-28",
     }
 
-    # 將內容切成段落 blocks（Notion 單一 rich_text 限 2000 字元）
-    paragraphs = content.split("\n")
     blocks = []
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-        # 切成 2000 字元以內的 chunks
-        chunks = [para[i:i+2000] for i in range(0, len(para), 2000)]
-        for chunk in chunks:
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
-                }
+
+    # === 收盤數據總覽 ===
+    blocks.append(_heading2("📈 收盤數據總覽"))
+
+    # 表格：股票代號 | 名稱 | 收盤價 | 漲跌 | 漲跌幅 | 成交量
+    table_rows = []
+    # Header row
+    table_rows.append({
+        "type": "table_row",
+        "table_row": {"cells": [
+            [{"type": "text", "text": {"content": "代號"}}],
+            [{"type": "text", "text": {"content": "名稱"}}],
+            [{"type": "text", "text": {"content": "收盤價"}}],
+            [{"type": "text", "text": {"content": "漲跌"}}],
+            [{"type": "text", "text": {"content": "漲跌%"}}],
+            [{"type": "text", "text": {"content": "成交量"}}],
+        ]}
+    })
+    for code, info in stock_data.items():
+        table_rows.append({
+            "type": "table_row",
+            "table_row": {"cells": [
+                [{"type": "text", "text": {"content": code}}],
+                [{"type": "text", "text": {"content": info.get("name", "")}}],
+                [{"type": "text", "text": {"content": info.get("close", "")}}],
+                [{"type": "text", "text": {"content": info.get("change", "")}}],
+                [{"type": "text", "text": {"content": info.get("change_pct", "")}}],
+                [{"type": "text", "text": {"content": info.get("volume", "")}}],
+            ]}
+        })
+
+    blocks.append({
+        "type": "table",
+        "table": {
+            "table_width": 6,
+            "has_column_header": True,
+            "has_row_header": False,
+            "children": table_rows,
+        }
+    })
+
+    # === 三大法人動向 ===
+    if institutional:
+        blocks.append(_divider())
+        blocks.append(_heading2("🏦 三大法人買賣超"))
+        inst_rows = [{
+            "type": "table_row",
+            "table_row": {"cells": [
+                [{"type": "text", "text": {"content": "代號"}}],
+                [{"type": "text", "text": {"content": "外資"}}],
+                [{"type": "text", "text": {"content": "投信"}}],
+                [{"type": "text", "text": {"content": "自營商"}}],
+            ]}
+        }]
+        for code, inst in institutional.items():
+            name = stock_data.get(code, {}).get("name", code)
+            inst_rows.append({
+                "type": "table_row",
+                "table_row": {"cells": [
+                    [{"type": "text", "text": {"content": f"{code} {name}"}}],
+                    [{"type": "text", "text": {"content": inst.get("foreign_buy_sell", "N/A")}}],
+                    [{"type": "text", "text": {"content": inst.get("investment_trust_buy_sell", "N/A")}}],
+                    [{"type": "text", "text": {"content": inst.get("dealer_buy_sell", "N/A")}}],
+                ]}
             })
+        blocks.append({
+            "type": "table",
+            "table": {
+                "table_width": 4,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": inst_rows,
+            }
+        })
+
+    # === AI 深度分析 ===
+    blocks.append(_divider())
+    blocks.append(_heading2("🤖 AI 深度分析"))
+
+    # 將分析內容轉為 Notion blocks
+    analysis_blocks = _parse_analysis_to_blocks(content)
+    blocks.extend(analysis_blocks)
 
     # Notion API 一次最多 100 blocks
     blocks = blocks[:100]
 
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
+        "icon": {"type": "emoji", "emoji": "📊"},
         "properties": {
             "title": {
                 "title": [{"text": {"content": title}}]
@@ -242,6 +309,76 @@ def publish_to_notion(title: str, content: str) -> str:
     page_url = page_data.get("url", "")
     print(f"Notion 發佈成功: {page_url}")
     return page_url
+
+
+def _heading2(text: str) -> dict:
+    return {
+        "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+    }
+
+
+def _heading3(text: str) -> dict:
+    return {
+        "type": "heading_3",
+        "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+    }
+
+
+def _divider() -> dict:
+    return {"type": "divider", "divider": {}}
+
+
+def _paragraph(text: str) -> dict:
+    return {
+        "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+    }
+
+
+def _callout(text: str, emoji: str = "💡") -> dict:
+    return {
+        "type": "callout",
+        "callout": {
+            "icon": {"type": "emoji", "emoji": emoji},
+            "rich_text": [{"type": "text", "text": {"content": text}}],
+        }
+    }
+
+
+def _parse_analysis_to_blocks(content: str) -> list:
+    """智慧解析 LLM 分析內容為 Notion blocks"""
+    blocks = []
+    lines = content.split("\n")
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # 以 ▶ 開頭 → heading_3（個股標題）
+        if line.startswith("▶"):
+            blocks.append(_heading3(line.lstrip("▶").strip()))
+        # 以 ◆ 開頭 → callout（重要段落）
+        elif line.startswith("◆"):
+            blocks.append(_callout(line.lstrip("◆").strip(), "◆"))
+        # 含【評分】→ callout 強調
+        elif "評分" in line or "吸引力" in line:
+            blocks.append(_callout(line, "⭐"))
+        # 含「組合建議」→ callout
+        elif "組合建議" in line or "整體" in line:
+            blocks.append(_callout(line, "📋"))
+        # 一般段落
+        else:
+            # Notion rich_text 限 2000 字
+            if len(line) > 2000:
+                chunks = [line[i:i+2000] for i in range(0, len(line), 2000)]
+                for chunk in chunks:
+                    blocks.append(_paragraph(chunk))
+            else:
+                blocks.append(_paragraph(line))
+
+    return blocks
 
 
 def build_line_summary(stock_data: dict, notion_url: str) -> str:
@@ -339,7 +476,7 @@ def main():
     print("正在發佈至 Notion...")
     today_str = datetime.date.today().strftime("%Y/%m/%d")
     notion_title = f"📊 持股收盤報告 {today_str}"
-    notion_url = publish_to_notion(notion_title, analysis)
+    notion_url = publish_to_notion(notion_title, analysis, stock_data, institutional)
 
     # 5. LINE 推播摘要 + Notion 連結
     print("正在推播至 LINE...")
