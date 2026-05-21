@@ -240,18 +240,31 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 
 
 def call_llm_analysis(prompt: str) -> str:
-    """呼叫 Gemini 進行深度分析"""
+    """呼叫 Gemini 進行深度分析（含重試機制）"""
+    import time
     client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
-            max_output_tokens=8000,
-            temperature=0.3,
-        ),
-    )
-    return response.text
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
+                    max_output_tokens=8000,
+                    temperature=0.3,
+                ),
+            )
+            return response.text
+        except Exception as e:
+            print(f"Gemini 呼叫失敗 (第 {attempt + 1} 次): {e}")
+            if attempt < max_retries - 1:
+                wait = 30 * (attempt + 1)
+                print(f"等待 {wait} 秒後重試...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def publish_to_notion(title: str, content: str, stock_data: dict, institutional: dict) -> str:
