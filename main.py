@@ -14,6 +14,11 @@ from google import genai
 
 # ====== 設定 ======
 STOCK_LIST = ["2454", "2492", "2451", "6488", "2330", "6196", "2344", "7750", "2313"]
+STOCK_NAMES = {
+    "2454": "聯發科", "2492": "華新科", "2451": "創見",
+    "6488": "環球晶", "2330": "台積電", "6196": "帆宣",
+    "2344": "華邦電", "7750": "鑫宇辰", "2313": "華通",
+}
 GEMINI_MODEL = "gemini-2.5-flash"
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -82,7 +87,7 @@ def fetch_yahoo_backup() -> dict:
             prev_close = meta.get("chartPreviousClose", 0)
             close = meta.get("regularMarketPrice", 0)
             stock_data[code] = {
-                "name": meta.get("shortName", code),
+                "name": STOCK_NAMES.get(code, meta.get("shortName", code)),
                 "volume": str(quote.get("volume", [0])[-1] if quote.get("volume") else 0),
                 "open": str(quote.get("open", [0])[-1] if quote.get("open") else 0),
                 "high": str(quote.get("high", [0])[-1] if quote.get("high") else 0),
@@ -286,8 +291,9 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
     analysis_blocks = _parse_analysis_to_blocks(content)
     blocks.extend(analysis_blocks)
 
-    # Notion API 一次最多 100 blocks
-    blocks = blocks[:100]
+    # Notion API 一次最多 100 blocks，超過則分批追加
+    first_batch = blocks[:100]
+    remaining = blocks[100:]
 
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
@@ -297,7 +303,7 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
                 "title": [{"text": {"content": title}}]
             }
         },
-        "children": blocks,
+        "children": first_batch,
     }
 
     resp = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -306,8 +312,24 @@ def publish_to_notion(title: str, content: str, stock_data: dict, institutional:
         raise RuntimeError(f"Notion publish failed: {resp.status_code}")
 
     page_data = resp.json()
+    page_id = page_data.get("id", "")
     page_url = page_data.get("url", "")
-    print(f"Notion 發佈成功: {page_url}")
+
+    # 分批追加剩餘 blocks
+    while remaining:
+        batch = remaining[:100]
+        remaining = remaining[100:]
+        append_url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+        append_resp = requests.patch(
+            append_url, headers=headers,
+            json={"children": batch}, timeout=30
+        )
+        if append_resp.status_code != 200:
+            print(f"Notion 追加 blocks 失敗: {append_resp.status_code} {append_resp.text}")
+            break
+        print(f"Notion 追加 {len(batch)} blocks 成功")
+
+    print(f"Notion 發佈成功 (共 {len(blocks)} blocks): {page_url}")
     return page_url
 
 
@@ -347,37 +369,50 @@ def _callout(text: str, emoji: str = "💡") -> dict:
 
 
 def _parse_analysis_to_blocks(content: str) -> list:
-    """智慧解析 LLM 分析內容為 Notion blocks"""
+    """智慧解析 LLM 分析內容為 Notion blocks，合併連續段落以減少 block 數量"""
     blocks = []
     lines = content.split("\n")
+    pending_lines = []  # 累積一般段落文字
+
+    def flush_pending():
+        """將累積的一般段落合併為一個 paragraph block"""
+        if pending_lines:
+            text = "\n".join(pending_lines)
+            # Notion rich_text 限 2000 字，超過則分段
+            while text:
+                chunk = text[:2000]
+                blocks.append(_paragraph(chunk))
+                text = text[2000:]
+            pending_lines.clear()
 
     for line in lines:
         line = line.strip()
         if not line:
+            # 空行 → flush 並加分隔（保留段落結構）
+            flush_pending()
             continue
 
         # 以 ▶ 開頭 → heading_3（個股標題）
         if line.startswith("▶"):
+            flush_pending()
             blocks.append(_heading3(line.lstrip("▶").strip()))
         # 以 ◆ 開頭 → callout（重要段落）
         elif line.startswith("◆"):
+            flush_pending()
             blocks.append(_callout(line.lstrip("◆").strip(), "◆"))
         # 含【評分】→ callout 強調
         elif "評分" in line or "吸引力" in line:
+            flush_pending()
             blocks.append(_callout(line, "⭐"))
         # 含「組合建議」→ callout
         elif "組合建議" in line or "整體" in line:
+            flush_pending()
             blocks.append(_callout(line, "📋"))
-        # 一般段落
+        # 一般段落：累積合併
         else:
-            # Notion rich_text 限 2000 字
-            if len(line) > 2000:
-                chunks = [line[i:i+2000] for i in range(0, len(line), 2000)]
-                for chunk in chunks:
-                    blocks.append(_paragraph(chunk))
-            else:
-                blocks.append(_paragraph(line))
+            pending_lines.append(line)
 
+    flush_pending()
     return blocks
 
 
