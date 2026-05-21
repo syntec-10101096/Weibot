@@ -170,6 +170,8 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 - 最後提供整體持股組合建議
 - 段落間用空行分隔，方便手機閱讀
 - 控制在 4500 字以內（LINE 推播限制）
+- 開頭不要有問候語、不要有免責聲明、不要有「尊敬的投資人」等客套話
+- 直接從第一檔股票的分析開始
 """
     return prompt
 
