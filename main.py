@@ -1,8 +1,9 @@
 """
 台股持股每日收盤分析報告
 排程：每個交易日下午 3:00 (UTC+8) 自動執行
-推播：LINE Messaging API
-LLM：Google Gemini 2.5 Pro
+分析報告：發佈至 Notion
+推播通知：LINE Messaging API（摘要 + Notion 連結）
+LLM：Google Gemini 2.5 Flash
 """
 
 import os
@@ -18,6 +19,8 @@ GEMINI_MODEL = "gemini-2.5-flash"
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
+NOTION_PARENT_PAGE_ID = "32e4a231-c75f-8064-b4bf-e6fd300da9d3"
 
 
 def fetch_twse_closing(date_str: str) -> dict:
@@ -168,8 +171,7 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 - 數據用【】框起來強調
 - 每檔股票結論提供「個股吸引力評分 (1-10分)」
 - 最後提供整體持股組合建議
-- 段落間用空行分隔，方便手機閱讀
-- 控制在 4500 字以內（LINE 推播限制）
+- 段落間用空行分隔，方便閱讀
 - 開頭不要有問候語、不要有免責聲明、不要有「尊敬的投資人」等客套話
 - 直接從第一檔股票的分析開始
 """
@@ -184,11 +186,90 @@ def call_llm_analysis(prompt: str) -> str:
         contents=prompt,
         config=genai.types.GenerateContentConfig(
             system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
-            max_output_tokens=4000,
+            max_output_tokens=8000,
             temperature=0.3,
         ),
     )
     return response.text
+
+
+def publish_to_notion(title: str, content: str) -> str:
+    """發佈報告至 Notion，回傳頁面 URL"""
+    url = "https://api.notion.com/v1/pages"
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+    # 將內容切成段落 blocks（Notion 單一 rich_text 限 2000 字元）
+    paragraphs = content.split("\n")
+    blocks = []
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        # 切成 2000 字元以內的 chunks
+        chunks = [para[i:i+2000] for i in range(0, len(para), 2000)]
+        for chunk in chunks:
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                }
+            })
+
+    # Notion API 一次最多 100 blocks
+    blocks = blocks[:100]
+
+    payload = {
+        "parent": {"page_id": NOTION_PARENT_PAGE_ID},
+        "properties": {
+            "title": {
+                "title": [{"text": {"content": title}}]
+            }
+        },
+        "children": blocks,
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    if resp.status_code != 200:
+        print(f"Notion 發佈失敗: {resp.status_code} {resp.text}")
+        raise RuntimeError(f"Notion publish failed: {resp.status_code}")
+
+    page_data = resp.json()
+    page_url = page_data.get("url", "")
+    print(f"Notion 發佈成功: {page_url}")
+    return page_url
+
+
+def build_line_summary(stock_data: dict, notion_url: str) -> str:
+    """建構 LINE 摘要訊息（漲跌一覽 + Notion 連結）"""
+    today = datetime.date.today().strftime("%Y/%m/%d")
+    lines = [f"📊 持股收盤速報 {today}", ""]
+
+    for code, info in stock_data.items():
+        change = info.get("change", "N/A")
+        close = info.get("close", "N/A")
+        name = info.get("name", code)
+        # 漲跌符號
+        try:
+            change_val = float(change)
+            arrow = "🔺" if change_val > 0 else "🔻" if change_val < 0 else "➖"
+            change_str = f"+{change}" if change_val > 0 else str(change)
+        except (ValueError, TypeError):
+            arrow = "➖"
+            change_str = change
+
+        pct = info.get("change_pct", "")
+        lines.append(f"{arrow} {code} {name} │ {close} ({change_str}) {pct}")
+
+    lines.append("")
+    lines.append("📋 完整分析報告：")
+    lines.append(notion_url)
+
+    return "\n".join(lines)
 
 
 def send_line_message(text: str):
@@ -235,11 +316,8 @@ def main():
         print("今日非交易日，跳過。")
         return
 
-    # 1. 取得收盤數據（測試用：取前一個交易日）
-    target_date = datetime.date.today() - datetime.timedelta(days=1)
-    # 若昨天是週日則取週五
-    while target_date.weekday() >= 5:
-        target_date -= datetime.timedelta(days=1)
+    # 1. 取得收盤數據
+    target_date = datetime.date.today()
     date_str = target_date.strftime("%Y%m%d")
     print(f"正在取得 {date_str} 收盤數據...")
     stock_data = fetch_twse_closing(date_str)
@@ -257,13 +335,16 @@ def main():
     prompt = build_analysis_prompt(stock_data, institutional)
     analysis = call_llm_analysis(prompt)
 
-    # 4. 組合報告
-    header = f"📊 持股收盤報告 {datetime.date.today().strftime('%Y/%m/%d')}\n{'='*30}\n\n"
-    report = header + analysis
+    # 4. 發佈至 Notion
+    print("正在發佈至 Notion...")
+    today_str = datetime.date.today().strftime("%Y/%m/%d")
+    notion_title = f"📊 持股收盤報告 {today_str}"
+    notion_url = publish_to_notion(notion_title, analysis)
 
-    # 5. LINE 推播
+    # 5. LINE 推播摘要 + Notion 連結
     print("正在推播至 LINE...")
-    send_line_message(report)
+    line_msg = build_line_summary(stock_data, notion_url)
+    send_line_message(line_msg)
 
     print("=== 完成 ===")
 

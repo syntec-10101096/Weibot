@@ -33,5 +33,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           TZ: Asia/Taipei
         run: python main.py
