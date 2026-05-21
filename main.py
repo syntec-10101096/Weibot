@@ -13,17 +13,6 @@ import requests
 from google import genai
 
 # ====== 設定 ======
-STOCK_LIST = ["2454", "2492", "2451", "6488", "2330", "6196", "2344", "7750", "2313"]
-STOCK_NAMES = {
-    "2454": "聯發科", "2492": "華新科", "2451": "創見",
-    "6488": "環球晶", "2330": "台積電", "6196": "帆宣",
-    "2344": "華邦電", "7750": "鑫宇辰", "2313": "華通",
-}
-STOCK_COSTS = {
-    "2454": 2190.78, "2492": 143.87, "2451": 235.33,
-    "6488": 540.77, "2330": 2110.20, "6196": 393.96,
-    "2344": 123.68, "7750": 0, "2313": 255.36,
-}
 GEMINI_MODEL = "gemini-2.5-flash"
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -31,6 +20,57 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 NOTION_PARENT_PAGE_ID = "32e4a231-c75f-8064-b4bf-e6fd300da9d3"
+NOTION_HOLDINGS_DB_ID = "3674a231-c75f-8136-b401-dc5f45f015e9"
+
+
+def fetch_holdings_from_notion() -> tuple:
+    """從 Notion 資料庫讀取持股清單，回傳 (STOCK_LIST, STOCK_NAMES, STOCK_COSTS)"""
+    url = f"https://api.notion.com/v1/databases/{NOTION_HOLDINGS_DB_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    # 只取啟用的持股
+    payload = {
+        "filter": {"property": "啟用", "checkbox": {"equals": True}},
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    if resp.status_code != 200:
+        print(f"Notion 持股清單讀取失敗: {resp.status_code} {resp.text}")
+        raise RuntimeError("無法從 Notion 讀取持股清單")
+
+    data = resp.json()
+    stock_list = []
+    stock_names = {}
+    stock_costs = {}
+
+    for page in data.get("results", []):
+        props = page.get("properties", {})
+        # 代號 (title)
+        code_arr = props.get("代號", {}).get("title", [])
+        code = code_arr[0]["plain_text"].strip() if code_arr else ""
+        if not code:
+            continue
+        # 名稱 (rich_text)
+        name_arr = props.get("名稱", {}).get("rich_text", [])
+        name = name_arr[0]["plain_text"].strip() if name_arr else code
+        # 持有成本 (number)
+        cost = props.get("持有成本", {}).get("number") or 0
+
+        stock_list.append(code)
+        stock_names[code] = name
+        stock_costs[code] = cost
+
+    print(f"從 Notion 讀取 {len(stock_list)} 檔持股: {', '.join(stock_list)}")
+    return stock_list, stock_names, stock_costs
+
+
+# 模組層級變數（由 main() 從 Notion 載入）
+STOCK_LIST = []
+STOCK_NAMES = {}
+STOCK_COSTS = {}
 
 
 def fetch_twse_closing(date_str: str) -> dict:
@@ -546,10 +586,18 @@ def is_trading_day() -> bool:
 
 
 def main():
+    global STOCK_LIST, STOCK_NAMES, STOCK_COSTS
     print(f"=== 台股收盤分析報告 {datetime.date.today()} ===")
 
     if not is_trading_day():
         print("今日非交易日，跳過。")
+        return
+
+    # 0. 從 Notion 讀取持股清單
+    print("正在從 Notion 讀取持股清單...")
+    STOCK_LIST, STOCK_NAMES, STOCK_COSTS = fetch_holdings_from_notion()
+    if not STOCK_LIST:
+        print("Notion 持股清單為空，結束。")
         return
 
     # 1. 取得收盤數據
