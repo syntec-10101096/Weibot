@@ -402,7 +402,7 @@ def _parse_analysis_to_blocks(content: str) -> list:
         # ◆ 開頭 → callout
         elif line.startswith("◆"):
             flush_pending()
-            blocks.append(_callout(line.lstrip("◆").strip(), "◆"))
+            blocks.append(_callout(line.lstrip("◆").strip(), "💡"))
         # 中文數字段落標題（一、即時數據... 二、籌碼面...）
         elif section_pattern.match(line):
             flush_pending()
