@@ -163,10 +163,12 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 - 近期重大法說會、產品發布或簽約新聞
 
 輸出要求：
-- 關鍵數據請加粗
+- 純文字格式，不要使用 Markdown（不要 **粗體**、不要 # 標題、不要 - 列表符號）
+- 用「▶」「◆」「→」「│」等符號區分段落層級
+- 數據用【】框起來強調
 - 每檔股票結論提供「個股吸引力評分 (1-10分)」
 - 最後提供整體持股組合建議
-- 不要有圖示
+- 段落間用空行分隔，方便手機閱讀
 - 控制在 4500 字以內（LINE 推播限制）
 """
     return prompt
@@ -179,7 +181,7 @@ def call_llm_analysis(prompt: str) -> str:
         model=GEMINI_MODEL,
         contents=prompt,
         config=genai.types.GenerateContentConfig(
-            system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。數據須基於事實，如無法確認請明確標註。",
+            system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
             max_output_tokens=4000,
             temperature=0.3,
         ),
