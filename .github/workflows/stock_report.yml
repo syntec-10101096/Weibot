@@ -7,6 +7,9 @@ on:
     - cron: '0 7 * * 1-5'
   workflow_dispatch:  # 允許手動觸發測試
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   stock-report:
     runs-on: ubuntu-latest
@@ -19,11 +22,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r stock_report/requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run stock report
         env:
@@ -31,4 +34,4 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           TZ: Asia/Taipei
-        run: python stock_report/main.py
+        run: python main.py
