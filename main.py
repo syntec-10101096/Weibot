@@ -566,18 +566,52 @@ def _paragraph(text: str) -> dict:
     }
 
 
-def _callout(text: str, emoji: str = "💡") -> dict:
+def _callout(text: str, emoji: str = "💡", color: str = "default") -> dict:
     return {
         "type": "callout",
         "callout": {
             "icon": {"type": "emoji", "emoji": emoji},
             "rich_text": [{"type": "text", "text": {"content": text}}],
+            "color": color,
         }
     }
 
 
+def _bulleted(rich_text_list: list, color: str = "default") -> dict:
+    return {
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {
+            "rich_text": rich_text_list,
+            "color": color,
+        }
+    }
+
+
+def _rich_text_with_brackets(text: str, color: str = "default") -> list:
+    """將【】內的文字加粗，其餘保持原樣，並套用顏色"""
+    import re
+    parts = re.split(r'(【[^】]*】)', text)
+    rich_text = []
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("【") and part.endswith("】"):
+            rich_text.append({
+                "type": "text",
+                "text": {"content": part},
+                "annotations": {"bold": True, "color": color},
+            })
+        else:
+            rich_text.append({
+                "type": "text",
+                "text": {"content": part},
+                "annotations": {"color": color},
+            })
+    return rich_text if rich_text else [{"type": "text", "text": {"content": text}}]
+
+
 def _parse_analysis_to_blocks(content: str) -> list:
-    """智慧解析 LLM 分析內容為 Notion blocks，平衡可讀性與 block 數量"""
+    """智慧解析 LLM 分析內容為 Notion blocks，使用顏色與縮排提升可讀性"""
     import re
     blocks = []
     lines = content.split("\n")
@@ -593,6 +627,31 @@ def _parse_analysis_to_blocks(content: str) -> list:
                 text = text[2000:]
             pending_lines.clear()
 
+    def _classify_sentiment(text: str) -> str:
+        """根據文字內容判斷情緒色調"""
+        positive = ["獲利", "上漲", "突破", "利多", "買入", "續抱", "正面", "增持", "多頭", "強勢"]
+        negative = ["套牢", "虧損", "下跌", "利空", "賣壓", "停損", "風險", "減碼", "空頭", "弱勢"]
+        action = ["建議", "可考慮", "觀察", "策略", "操作"]
+        if any(kw in text for kw in positive):
+            return "green"
+        if any(kw in text for kw in negative):
+            return "red"
+        if any(kw in text for kw in action):
+            return "blue"
+        return "default"
+
+    def _pick_callout_style(text: str) -> tuple:
+        """根據 callout 內容選擇 emoji 與背景色"""
+        if any(kw in text for kw in ["獲利", "停利", "獲利了結"]):
+            return "💰", "green_background"
+        if any(kw in text for kw in ["套牢", "虧損", "停損", "風險"]):
+            return "⚠️", "red_background"
+        if any(kw in text for kw in ["建議", "策略", "操作", "部位"]):
+            return "📋", "blue_background"
+        if any(kw in text for kw in ["觀察", "支撐", "壓力", "量能"]):
+            return "🔍", "yellow_background"
+        return "💡", "gray_background"
+
     # 辨識段落標題模式
     section_pattern = re.compile(r'^[一二三四五六七八九十]+[、．.]')
     stock_code_pattern = re.compile(r'^\d{4}\s')
@@ -603,14 +662,24 @@ def _parse_analysis_to_blocks(content: str) -> list:
             flush_pending()
             continue
 
-        # ▶ 開頭 → heading_3（個股標題）
+        # ▶ 開頭 → heading_3（個股標題）+ 分隔線
         if line.startswith("▶"):
             flush_pending()
+            blocks.append(_divider())
             blocks.append(_heading3(line.lstrip("▶").strip()))
-        # ◆ 開頭 → callout
+        # ◆ 開頭 → 智慧 callout（根據內容選色）
         elif line.startswith("◆"):
             flush_pending()
-            blocks.append(_callout(line.lstrip("◆").strip(), "💡"))
+            text = line.lstrip("◆").strip()
+            emoji, color = _pick_callout_style(text)
+            blocks.append(_callout(text, emoji, color))
+        # → 開頭 → 縮排 bulleted list + 顏色
+        elif line.startswith("→"):
+            flush_pending()
+            text = line.lstrip("→").strip()
+            color = _classify_sentiment(text)
+            rich_text = _rich_text_with_brackets(text, color)
+            blocks.append(_bulleted(rich_text, color))
         # 中文數字段落標題（一、即時數據... 二、籌碼面...）
         elif section_pattern.match(line):
             flush_pending()
@@ -618,15 +687,16 @@ def _parse_analysis_to_blocks(content: str) -> list:
         # 純股票代號 + 名稱（短行，作為個股分隔標題）
         elif stock_code_pattern.match(line) and len(line) < 30:
             flush_pending()
+            blocks.append(_divider())
             blocks.append(_heading3(line))
         # 含「評分」或「吸引力」→ 星星 callout
         elif "評分" in line or "吸引力" in line:
             flush_pending()
-            blocks.append(_callout(line, "⭐"))
+            blocks.append(_callout(line, "⭐", "yellow_background"))
         # 含「組合建議」或「整體」→ 摘要 callout
         elif "組合建議" in line or "整體建議" in line:
             flush_pending()
-            blocks.append(_callout(line, "📋"))
+            blocks.append(_callout(line, "📋", "blue_background"))
         # 一般段落：累積（但超過 1500 字就先 flush）
         else:
             pending_lines.append(line)
