@@ -215,17 +215,51 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
     stock_data = {}
     # 組合 symbols：先嘗試 .TW，失敗的再用 .TWO
     symbols_tw = [f"{code}.TW" for code in codes]
-    symbols_str = ";".join(symbols_tw)
+    symbols_str = ",".join(symbols_tw)
 
     url = (
         "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;"
-        f"fields=symbolId,name,previousClose,openPrice,dayHigh,dayLow,closePrice,change,changePercent,totalVolume;"
+        f"fields=symbolId,symbolName,previousClose,openPrice,dayHigh,dayLow,price,change,changePercent,volume;"
         f"symbols={symbols_str}"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://tw.stock.yahoo.com/",
     }
+
+    def _parse_val(item, key, fallback=0):
+        """解析 Yahoo TW 回應值（可能是 dict{raw} 或直接值）"""
+        v = item.get(key)
+        if v is None:
+            return fallback
+        if isinstance(v, dict):
+            return v.get("raw", fallback)
+        return v
+
+    def _parse_item(item):
+        """解析單一股票項目"""
+        symbol = item.get("symbol", "") or item.get("symbolId", "")
+        code = symbol.replace(".TW", "").replace(".TWO", "")
+        name = item.get("symbolName", "") or item.get("name", code)
+        close = _parse_val(item, "price") or _parse_val(item, "closePrice")
+        if not close and not name:
+            return None, None
+        change_raw = _parse_val(item, "change", 0)
+        change_pct = item.get("changePercent", "")
+        if isinstance(change_pct, dict):
+            change_pct = change_pct.get("fmt", "N/A")
+        if not change_pct or change_pct == 0:
+            change_pct = "N/A"
+        return code, {
+            "name": name,
+            "volume": str(int(_parse_val(item, "volume") or _parse_val(item, "totalVolume", 0))),
+            "open": str(_parse_val(item, "regularMarketOpen") or _parse_val(item, "openPrice", 0)),
+            "high": str(_parse_val(item, "regularMarketDayHigh") or _parse_val(item, "dayHigh", 0)),
+            "low": str(_parse_val(item, "regularMarketDayLow") or _parse_val(item, "dayLow", 0)),
+            "close": str(close if close else 0),
+            "change": f"{float(change_raw):.2f}" if change_raw != "N/A" else "N/A",
+            "change_pct": change_pct if isinstance(change_pct, str) else f"{change_pct:.2f}%",
+        }
 
     try:
         resp = requests.get(url, headers=headers, timeout=15)
@@ -235,21 +269,9 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
             if not data:
                 print("Yahoo TW .TW 回應為空陣列")
             for item in data:
-                symbol_id = item.get("symbolId", "")
-                code = symbol_id.replace(".TW", "").replace(".TWO", "")
-                close = item.get("closePrice")
-                if not close and not item.get("name"):
-                    continue
-                stock_data[code] = {
-                    "name": item.get("name", code),
-                    "volume": str(int(item.get("totalVolume", 0))),
-                    "open": str(item.get("openPrice", 0)),
-                    "high": str(item.get("dayHigh", 0)),
-                    "low": str(item.get("dayLow", 0)),
-                    "close": str(close if close else 0),
-                    "change": f"{item.get('change', 0):.2f}",
-                    "change_pct": f"{item.get('changePercent', 0):.2f}%",
-                }
+                code, info = _parse_item(item)
+                if code and info:
+                    stock_data[code] = info
     except Exception as e:
         print(f"Yahoo TW batch (.TW) 失敗: {e}")
 
@@ -257,10 +279,10 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
     missing = [code for code in codes if code not in stock_data]
     if missing:
         symbols_two = [f"{code}.TWO" for code in missing]
-        symbols_str2 = ";".join(symbols_two)
+        symbols_str2 = ",".join(symbols_two)
         url2 = (
             "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;"
-            f"fields=symbolId,name,previousClose,openPrice,dayHigh,dayLow,closePrice,change,changePercent,totalVolume;"
+            f"fields=symbolId,symbolName,previousClose,openPrice,dayHigh,dayLow,price,change,changePercent,volume;"
             f"symbols={symbols_str2}"
         )
         try:
@@ -268,21 +290,9 @@ def fetch_yahoo_tw_batch(codes: list) -> dict:
             if resp2.status_code == 200:
                 data2 = resp2.json()
                 for item in data2:
-                    symbol_id = item.get("symbolId", "")
-                    code = symbol_id.replace(".TWO", "").replace(".TW", "")
-                    close = item.get("closePrice")
-                    if not close and not item.get("name"):
-                        continue
-                    stock_data[code] = {
-                        "name": item.get("name", code),
-                        "volume": str(int(item.get("totalVolume", 0))),
-                        "open": str(item.get("openPrice", 0)),
-                        "high": str(item.get("dayHigh", 0)),
-                        "low": str(item.get("dayLow", 0)),
-                        "close": str(close if close else 0),
-                        "change": f"{item.get('change', 0):.2f}",
-                        "change_pct": f"{item.get('changePercent', 0):.2f}%",
-                    }
+                    code, info = _parse_item(item)
+                    if code and info:
+                        stock_data[code] = info
         except Exception as e:
             print(f"Yahoo TW batch (.TWO) 失敗: {e}")
 
