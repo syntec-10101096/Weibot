@@ -3,7 +3,7 @@
 排程：每個交易日下午 3:00 (UTC+8) 自動執行
 分析報告：發佈至 Notion
 推播通知：LINE Messaging API（摘要 + Notion 連結）
-LLM：Google Gemini 2.5 Flash
+LLM：GitHub Models - OpenAI GPT-4.1
 """
 
 import os
@@ -11,11 +11,11 @@ import json
 import time
 import datetime
 import requests
-from google import genai
 
 # ====== 設定 ======
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
+GITHUB_MODELS_MODEL = "openai/gpt-4.1"
+GH_MODELS_TOKEN = os.environ.get("GH_MODELS_TOKEN", "")
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
@@ -356,24 +356,31 @@ def build_analysis_prompt(stock_data: dict, institutional: dict) -> str:
 
 
 def call_llm_analysis(prompt: str) -> str:
-    """呼叫 Gemini 進行深度分析（含重試機制）"""
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    """透過 GitHub Models API 呼叫 GPT-4.1 進行深度分析（含重試機制）"""
+    headers = {
+        "Authorization": f"Bearer {GH_MODELS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GITHUB_MODELS_MODEL,
+        "messages": [
+            {"role": "system", "content": "你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。"},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 16000,
+        "temperature": 0.3,
+    }
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction="你是專精台股的資深資產管理經理，請以繁體中文回覆。輸出純文字，不使用任何 Markdown 語法。數據須基於事實，如無法確認請明確標註。",
-                    max_output_tokens=16000,
-                    temperature=0.3,
-                ),
-            )
-            return response.text
+            resp = requests.post(GITHUB_MODELS_URL, headers=headers, json=payload, timeout=120)
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"Gemini 呼叫失敗 (第 {attempt + 1} 次): {e}")
+            print(f"GPT-4.1 呼叫失敗 (第 {attempt + 1} 次): {e}")
             if attempt < max_retries - 1:
                 wait = 30 * (attempt + 1)
                 print(f"等待 {wait} 秒後重試...")
