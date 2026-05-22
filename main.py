@@ -467,7 +467,7 @@ def call_llm_analysis(prompt: str) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            resp = requests.post(GITHUB_MODELS_URL, headers=headers, json=payload, timeout=120)
+            resp = requests.post(GITHUB_MODELS_URL, headers=headers, json=payload, timeout=300)
             if resp.status_code != 200:
                 raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
