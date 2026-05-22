@@ -25,7 +25,7 @@ NOTION_HOLDINGS_DB_ID = "3674a231-c75f-8136-b401-dc5f45f015e9"
 
 
 def fetch_holdings_from_notion() -> tuple:
-    """從 Notion 資料庫讀取持股清單，回傳 (STOCK_LIST, STOCK_NAMES, STOCK_COSTS)"""
+    """從 Notion 資料庫讀取持股清單，回傳 (STOCK_LIST, STOCK_NAMES, STOCK_COSTS, STOCK_PAGE_IDS)"""
     url = f"https://api.notion.com/v1/databases/{NOTION_HOLDINGS_DB_ID}/query"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -46,9 +46,11 @@ def fetch_holdings_from_notion() -> tuple:
     stock_list = []
     stock_names = {}
     stock_costs = {}
+    stock_page_ids = {}
 
     for page in data.get("results", []):
         props = page.get("properties", {})
+        page_id = page.get("id", "")
         # 代號 (title)
         code_arr = props.get("代號", {}).get("title", [])
         code = code_arr[0]["plain_text"].strip() if code_arr else ""
@@ -56,19 +58,100 @@ def fetch_holdings_from_notion() -> tuple:
             continue
         # 持有成本 (number)
         cost = props.get("持有成本", {}).get("number") or 0
+        # 名稱 (rich_text) - 快取的中文名稱
+        name_arr = props.get("名稱", {}).get("rich_text", [])
+        cached_name = name_arr[0]["plain_text"].strip() if name_arr else ""
 
         stock_list.append(code)
-        stock_names[code] = code  # 預設用代號，後續由市場資料覆蓋
+        stock_names[code] = cached_name if cached_name else code
         stock_costs[code] = cost
+        stock_page_ids[code] = page_id
 
     print(f"從 Notion 讀取 {len(stock_list)} 檔持股: {', '.join(stock_list)}")
-    return stock_list, stock_names, stock_costs
+    return stock_list, stock_names, stock_costs, stock_page_ids
 
 
 # 模組層級變數（由 main() 從 Notion 載入）
 STOCK_LIST = []
 STOCK_NAMES = {}
 STOCK_COSTS = {}
+STOCK_PAGE_IDS = {}
+
+
+def _is_chinese(text: str) -> bool:
+    """判斷文字是否包含中文字元（用於區分中文名稱 vs 英文名稱）"""
+    if not text:
+        return False
+    for ch in text:
+        if '\u4e00' <= ch <= '\u9fff':
+            return True
+    return False
+
+
+def update_names_to_notion(names_to_update: dict):
+    """將中文名稱回寫至 Notion 持股資料庫的「名稱」欄位
+    names_to_update: {code: chinese_name} - 只更新有變動的
+    """
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    for code, name in names_to_update.items():
+        page_id = STOCK_PAGE_IDS.get(code)
+        if not page_id:
+            continue
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        payload = {
+            "properties": {
+                "名稱": {
+                    "rich_text": [{"type": "text", "text": {"content": name}}]
+                }
+            }
+        }
+        try:
+            resp = requests.patch(url, headers=headers, json=payload, timeout=10)
+            if resp.status_code == 200:
+                print(f"  ✓ {code} 名稱已更新為「{name}」")
+            else:
+                print(f"  ✗ {code} 名稱更新失敗: {resp.status_code}")
+        except Exception as e:
+            print(f"  ✗ {code} 名稱更新異常: {e}")
+
+
+def merge_stock_names(stock_data: dict):
+    """整合市場資料的中文名稱至 STOCK_NAMES，並回寫 Notion
+    邏輯：
+    - 市場資料有中文名 → 使用並回寫 Notion
+    - 市場資料只有英文名 → 使用 Notion 快取的中文名
+    - 都沒有 → 使用代號
+    同時更新 stock_data 中的 name 欄位，確保報告顯示中文
+    """
+    global STOCK_NAMES
+    names_to_update = {}
+
+    for code, info in stock_data.items():
+        market_name = info.get("name", "")
+        cached_name = STOCK_NAMES.get(code, code)
+
+        if _is_chinese(market_name):
+            # 市場來源有中文名
+            best_name = market_name
+            if best_name != cached_name:
+                names_to_update[code] = best_name
+        elif _is_chinese(cached_name):
+            # 市場來源是英文，但 Notion 有快取中文名
+            best_name = cached_name
+        else:
+            # 都沒有中文，保留市場名稱（英文）
+            best_name = market_name if market_name else code
+
+        STOCK_NAMES[code] = best_name
+        info["name"] = best_name  # 更新 stock_data 確保報告用中文
+
+    if names_to_update:
+        print(f"更新 {len(names_to_update)} 檔中文名稱至 Notion...")
+        update_names_to_notion(names_to_update)
 
 
 def fetch_twse_closing(date_str: str) -> dict:
@@ -790,7 +873,7 @@ def is_trading_day() -> bool:
 
 
 def main():
-    global STOCK_LIST, STOCK_NAMES, STOCK_COSTS
+    global STOCK_LIST, STOCK_NAMES, STOCK_COSTS, STOCK_PAGE_IDS
     print(f"=== 台股收盤分析報告 {datetime.date.today()} ===")
 
     if not is_trading_day():
@@ -799,7 +882,7 @@ def main():
 
     # 0. 從 Notion 讀取持股清單
     print("正在從 Notion 讀取持股清單...")
-    STOCK_LIST, STOCK_NAMES, STOCK_COSTS = fetch_holdings_from_notion()
+    STOCK_LIST, STOCK_NAMES, STOCK_COSTS, STOCK_PAGE_IDS = fetch_holdings_from_notion()
     if not STOCK_LIST:
         print("Notion 持股清單為空，結束。")
         return
@@ -813,6 +896,10 @@ def main():
     if not stock_data:
         print("無法取得收盤數據（可能尚未結算或非交易日）")
         return
+
+    # 1.5 整合中文名稱（市場來源 → Notion 快取 → 代號）
+    print("正在整合股票中文名稱...")
+    merge_stock_names(stock_data)
 
     # 2. 取得三大法人
     print("正在取得三大法人數據...")
